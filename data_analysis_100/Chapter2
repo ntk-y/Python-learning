@@ -1,0 +1,123 @@
+import pandas as pd
+
+## データ読込
+uriage_data = pd.read_csv('uriage.csv')
+print(uriage_data.head())
+kokyaku_data = pd.read_excel('kokyaku_daicho.xlsx')
+print(kokyaku_data.head())
+
+
+## データに揺れがあるまま集計
+# print(uriage_data.dtypes)
+uriage_data['purchase_date'] = pd.to_datetime(uriage_data['purchase_date'])
+uriage_data['purchase_month'] = uriage_data['purchase_date'].dt.strftime('%Y%m')
+# res = uriage_data.pivot_table(index='purchase_month', columns='item_name', aggfunc='size', fill_value=0)
+# print(res)
+print()
+
+
+## 商品名の揺れ補正
+# 商品名のユニーク数確認
+print(len(pd.unique(uriage_data.item_name)))
+# 大文字小文字統一
+uriage_data['item_name'] = uriage_data['item_name'].str.upper()
+# 全角スペース除去
+uriage_data['item_name'] = uriage_data['item_name'].str.replace('　','')
+# 半角スペース除去
+uriage_data['item_name'] = uriage_data['item_name'].str.replace(' ','')
+# item_nameでソート　昇順で表示
+print(uriage_data.sort_values(by=['item_name'], ascending=True))
+print(pd.unique(uriage_data['item_name']))
+print(len(pd.unique(uriage_data['item_name'])))
+
+
+## 金額欠損値の補完
+# 欠損値チェック
+print(uriage_data.isnull().any(axis=0))
+# 欠損値のインデックス取得
+flg_is_null = uriage_data['item_price'].isnull()
+# 欠損値のある商品名でリスト化して探索
+for trg in list(uriage_data.loc[flg_is_null, 'item_name'].unique()):
+    # 金額が記載されてる行から金額を取得
+    price = uriage_data.loc[(~flg_is_null) & (uriage_data['item_name'] == trg), 'item_price'].max()
+    uriage_data['item_price'].loc[(flg_is_null) & (uriage_data['item_name'] == trg)] = price
+print(uriage_data.head())
+# 欠損値チェック（補正後）
+print(uriage_data.isnull().any(axis=0))
+# 金額が正しいかチェック(各商品金額のmax,min比較)
+for trg in list(uriage_data['item_name'].sort_values().unique()):
+    print(trg + 'の最大額' + str(uriage_data.loc[uriage_data['item_name'] == trg]['item_price'].max()) +
+          '最小額' + str(uriage_data.loc[uriage_data['item_name'] == trg]['item_price'].min(skipna=False)))
+
+
+## 顧客名の揺れ補正
+"""
+結合する時のキーが顧客名しかないので補正は必須
+"""
+print(kokyaku_data['顧客名'].head())
+# スペースの補完
+kokyaku_data['顧客名'] = kokyaku_data['顧客名'].str.replace('　','')
+kokyaku_data['顧客名'] = kokyaku_data['顧客名'].str.replace(' ','')
+print(kokyaku_data['顧客名'].head())
+
+
+## 日付の揺れを補正
+# 数値で取り込まれてる判定
+flg_is_serial = kokyaku_data['登録日'].astype('str').str.isdigit()
+print(flg_is_serial.sum())
+# 数値から日付に変換
+fromSerial = pd.to_timedelta(kokyaku_data.loc[flg_is_serial,'登録日'].astype(float),unit='D') + pd.to_datetime('1990/01/01')
+print(fromSerial)
+# 書式変更
+fromString = pd.to_datetime(kokyaku_data.loc[~flg_is_serial,'登録日'])
+print(fromString)
+# 補正データで更新
+kokyaku_data['登録日'] = pd.concat([fromSerial, fromString])
+print(kokyaku_data)
+
+
+## 登録月の集計
+kokyaku_data['登録年月'] = kokyaku_data['登録日'].dt.strftime('%Y%m')
+rslt = kokyaku_data.groupby('登録年月').count()['顧客名']
+print(rslt)
+# flg_is_serial = kokyaku_data['登録日'].astype('str').str.isdigit()
+# print(flg_is_serial.sum())
+
+
+## データの結合
+join_data = pd.merge(uriage_data, kokyaku_data, left_on='customer_name', right_on='顧客名', how='left')
+join_data = join_data.drop('customer_name', axis=1)
+print(join_data.head())
+
+
+## join_dataの保存˜
+# 並び替え
+dump_data = join_data[['purchase_date', 'purchase_month', 'item_name', 'item_price',
+                       '顧客名', 'かな', '地域', 'メールアドレス', '登録日']]
+# 保存
+dump_data.to_csv('dump_data.csv',index=False)
+
+
+## 月間の集計
+import_data = pd.read_csv('dump_data.csv')
+# 売上個数
+byItem = import_data.pivot_table(index='purchase_month', columns='item_name', aggfunc='size',fill_value=0)
+print(byItem)
+# 売上金額
+byPrice = import_data.pivot_table(index='purchase_month', columns='item_name', values='item_price',
+                                  aggfunc='sum', fill_value=0)
+print(byPrice)
+# 各顧客の購入個数
+byCustomer = import_data.pivot_table(index='purchase_month', columns='顧客名', aggfunc='size', fill_value=0)
+print(byCustomer)
+# 地域ごとの販売数
+byRegion = import_data.pivot_table(index='purchase_month', columns='地域', aggfunc='size', fill_value=0)
+print(byRegion)
+# 集計期間内での離脱顧客
+"""
+away_data：顧客台帳を主体に結合
+集計期間に購入していない顧客は「購買日」等がNaNになっている。
+isnull()を条件にデータ抽出後、'顧客名', 'メールアドレス', '登録日'を表示
+"""
+away_data = pd.merge(uriage_data, kokyaku_data, left_on='customer_name', right_on='顧客名', how='right')
+print(away_data[away_data['purchase_date'].isnull()][['顧客名', 'メールアドレス', '登録日']])
