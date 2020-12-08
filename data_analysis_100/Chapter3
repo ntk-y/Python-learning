@@ -1,0 +1,119 @@
+import pandas as pd
+from dateutil.relativedelta import relativedelta
+import matplotlib.pyplot as plt
+
+## データ読み込み 詳細表示
+uselog = pd.read_csv('use_log.csv')
+customer = pd.read_csv('customer_master.csv')
+class_master = pd.read_csv('class_master.csv')
+campaign_master = pd.read_csv('campaign_master.csv')
+print(len(uselog))
+print(uselog.head())
+print(len(customer))
+print(customer.head())
+print(len(class_master))
+print(class_master.head())
+print(len(campaign_master))
+print(campaign_master.head())
+
+
+## データ結合
+customer_join = pd.merge(customer, class_master, on='class', how='left')
+customer_join = pd.merge(customer_join, campaign_master, on='campaign_id', how='left')
+print(customer_join.head())
+print(customer_join.columns)
+
+
+## 欠損値の確認
+print(customer_join.isnull().sum())
+print('################')
+
+
+## 顧客データ集計
+# 会員区分
+print(customer_join.groupby('class_name').count()['customer_id'])
+# キャンペーン区分
+print(customer_join.groupby('campaign_name').count()['customer_id'])
+# 性別
+print(customer_join.groupby('gender').count()['customer_id'])
+# 退会済み
+print(customer_join.groupby('is_deleted').count()['customer_id'])
+# 入会人数(2018-04-01〜2019-03-31)
+customer_join['start_date'] = pd.to_datetime(customer_join['start_date'])
+customer_start = customer_join.loc[customer_join['start_date'] > pd.to_datetime('20180401')]
+# print(len(customer_start))
+print()
+
+# 最新月顧客データ抽出
+customer_join['end_date'] = pd.to_datetime(customer_join['end_date'])
+customer_newer = customer_join.loc[(customer_join['end_date'] >= pd.to_datetime('20190331')) | (customer_join['end_date'].isna())]
+print(len(customer_newer))
+print(customer_newer['end_date'].unique())
+# 会員区分
+print(customer_newer.groupby('class_name').count()['customer_id'])
+# キャンペーン区分
+print(customer_newer.groupby('campaign_name').count()['customer_id'])
+# 性別
+print(customer_newer.groupby('gender').count()['customer_id'])
+
+
+## 利用履歴データ集計
+uselog['usedate'] = pd.to_datetime(uselog['usedate'])
+uselog['年月'] = uselog['usedate'].dt.strftime('%Y%m')
+uselog_months = uselog.groupby(['年月', 'customer_id'], as_index=False).count()
+uselog_months.rename(columns={'log_id':'count'},inplace=True)
+del uselog_months['usedate']
+print(uselog_months.head())
+
+# 顧客毎の月内利用回数 集計
+uselog_customer = uselog_months.groupby('customer_id').agg(['mean', 'median', 'max', 'min'])['count']
+print(uselog_customer)
+uselog_customer = uselog_customer.reset_index(drop=False) # groupbyでindexになったcustomer_idをカラムに変更
+print('顧客毎の月内利用回数')
+print(uselog_customer.head())
+
+# 顧客毎の月内 曜日別 集計
+uselog['weekday'] = uselog['usedate'].dt.weekday # 月〜日 → 0〜6
+uselog_weekday = uselog.groupby(['customer_id', '年月', 'weekday'], as_index = False).count()[['customer_id', '年月', 'weekday', 'log_id']]
+uselog_weekday.rename(columns={'log_id':'count'},inplace=True)
+print(uselog_weekday.head())
+
+## 月４回以上同曜日 利用者 フラグ作成
+uselog_weekday = uselog_weekday.groupby('customer_id', as_index=False).max()[['customer_id', 'count']]
+uselog_weekday['routine_flg'] = 0 # フラグ列作成
+uselog_weekday['routine_flg'] = uselog_weekday['routine_flg'].where(uselog_weekday['count']<4,1)
+# print(uselog_weekday.head())
+# フラグ結合
+customer_join = pd.merge(customer_join,uselog_customer,on='customer_id',how='left')
+customer_join = pd.merge(customer_join,uselog_weekday[['customer_id','routine_flg']],on='customer_id',how='left')
+print(customer_join.head())
+print(customer_join.columns)
+# print(customer_join.isnull().sum())
+
+## 会員期間の計算
+customer_join['calc_date'] = customer_join['end_date']
+customer_join['calc_date'] = customer_join['calc_date'].fillna(pd.to_datetime('20190430')) # 欠損値に20190430を代入
+customer_join['membership_period'] = 0
+# delta = customer_join['calc_date']-customer_join['start_date']
+for i in range(len(customer_join)):
+    delta = relativedelta(customer_join['calc_date'].iloc[i],customer_join['start_date'].iloc[i])
+    customer_join['membership_period'].iloc[i] = delta.years*12 + delta.months # 月単位で算出
+# print(customer_join.sample(10))
+
+# 顧客全体の利用回数統計量（月）
+print(customer_join[['mean','median','max','min']].describe())
+print()
+print(customer_join.groupby('routine_flg').count()['customer_id'])
+
+# 会員期間の分布
+plt.hist(customer_join['membership_period'])
+plt.show()
+
+## 退会ユーザーと継続ユーザーの比較
+customer_end = customer_join.loc[customer_join['is_deleted']==1]
+print(customer_end.describe())
+customer_stay = customer_join.loc[customer_join['is_deleted']==0]
+print(customer_stay.describe())
+
+## customer_join保存
+customer_join.to_csv('customer_join.csv',index=False)
